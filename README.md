@@ -2,6 +2,10 @@
 
 A TamperMonkey userscript that enhances the [Claude.ai](https://claude.ai) Plan Usage Limits page with actionable time and budget information.
 
+## Screenshots
+
+![Claude Usage Page enhanced](./img/claude-usage-page-enhanced.png)
+
 ## Features
 
 ### 1. Session reset — exact time
