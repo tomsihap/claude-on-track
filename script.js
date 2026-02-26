@@ -11,6 +11,7 @@
     'use strict';
 
     const STORAGE_KEY         = 'claude-on-track-history';
+    const SESSION_KEY         = 'claude-on-track-session';
     const ALERT_THRESHOLD     = 20;          // % remaining below which we show an alert
     const MIN_SNAPSHOT_MS     = 30 * 60_000; // minimum interval between two snapshots
 
@@ -28,6 +29,16 @@
         history.push({ ts: Date.now(), weekResetTs, allModels, sonnet });
         if (history.length > 100) history.splice(0, history.length - 100);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    }
+
+    // Returns stored baseline for this session, or null on first observation (saves baseline).
+    function getSessionBaseline(resetTs, currentUsed) {
+        try {
+            const stored = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+            if (stored && stored.resetTs === resetTs) return stored;
+            localStorage.setItem(SESSION_KEY, JSON.stringify({ resetTs, ts: Date.now(), used: currentUsed }));
+            return null;
+        } catch { return null; }
     }
 
     // ─── DOM helpers ──────────────────────────────────────────────────────────
@@ -119,7 +130,7 @@
 
     // ─── Session info block ───────────────────────────────────────────────────
 
-    function buildSessionBlock(resetDate, used) {
+    function buildSessionBlock(resetDate, used, baseline) {
         const remaining = 100 - used;
         const hoursLeft = (resetDate - Date.now()) / 3_600_000;
 
@@ -127,6 +138,21 @@
         const timeLeft = hoursLeft >= 1
             ? `in ${hoursLeft.toFixed(1)} h`
             : `in ${Math.round(hoursLeft * 60)} min`;
+
+        // Depletion estimate from observed rate since baseline
+        let depletionStr = '';
+        if (baseline) {
+            const elapsedHours = (Date.now() - baseline.ts) / 3_600_000;
+            const usedSince    = used - baseline.used;
+            if (elapsedHours > 0.05 && usedSince > 0) {
+                const rate = usedSince / elapsedHours;
+                const hoursToDepletion = remaining / rate;
+                if (hoursToDepletion < hoursLeft) {
+                    const depDate = new Date(Date.now() + hoursToDepletion * 3_600_000);
+                    depletionStr = `⚠ depleted at ${fmtHM(depDate)}`;
+                }
+            }
+        }
 
         const isAlert = remaining < ALERT_THRESHOLD;
 
@@ -150,6 +176,13 @@
         badge.appendChild(mkEl('b', { text: perHour }));
         badge.appendChild(mkEl('span', { style: 'opacity:.6;', text: ` (resets ${timeLeft})` }));
         wrapper.appendChild(badge);
+
+        if (depletionStr) {
+            wrapper.appendChild(mkEl('div', {
+                style: 'font-size:.75em;color:#ef4444;padding-left:2px;',
+                text: depletionStr,
+            }));
+        }
 
         return wrapper;
     }
@@ -240,6 +273,53 @@
         return wrapper;
     }
 
+    // ─── Global status badge ──────────────────────────────────────────────────
+
+    function updateGlobalBadge(allModelsUsed, sonnetUsed, weekResetTs) {
+        const hoursLeft      = (weekResetTs - Date.now()) / 3_600_000;
+        const elapsedHours   = 7 * 24 - hoursLeft;
+        const idealUsed      = (elapsedHours / (7 * 24)) * 100;
+        const worstUsed      = Math.max(allModelsUsed, sonnetUsed);
+        const worstRemaining = 100 - worstUsed;
+        const worstDelta     = worstUsed - idealUsed;
+
+        let emoji, label, textColor, bgColor, borderColor;
+        if (worstRemaining < ALERT_THRESHOLD) {
+            emoji = '🔴'; label = 'Running low';
+            textColor = '#ef4444'; bgColor = 'rgba(239,68,68,.1)'; borderColor = 'rgba(239,68,68,.35)';
+        } else if (worstDelta > 5) {
+            emoji = '🟠'; label = 'Watch out';
+            textColor = '#f97316'; bgColor = 'rgba(249,115,22,.1)'; borderColor = 'rgba(249,115,22,.35)';
+        } else {
+            emoji = '🟢'; label = 'On track';
+            textColor = '#22c55e'; bgColor = 'rgba(34,197,94,.1)'; borderColor = 'rgba(34,197,94,.35)';
+        }
+
+        const state = worstRemaining < ALERT_THRESHOLD ? 'low' : worstDelta > 5 ? 'warn' : 'ok';
+
+        let badge = document.getElementById('cot-global-badge');
+        if (!badge) {
+            const heading = Array.from(document.querySelectorAll('h2'))
+                .find(h => h.textContent.trim() === 'Plan usage limits');
+            if (!heading) return;
+            badge = mkEl('span', {
+                style: 'margin-left:10px;font-size:.72em;font-weight:500;border-radius:5px;padding:2px 8px;vertical-align:middle;',
+            });
+            badge.id = 'cot-global-badge';
+            heading.appendChild(badge);
+        }
+
+        // Avoid re-mutating the DOM (childList) if nothing changed — would re-trigger the MutationObserver.
+        // dataset writes are attribute mutations, not childList, so they don't trigger the observer.
+        if (badge.dataset.cotState === state) return;
+        badge.dataset.cotState = state;
+
+        badge.textContent = `${emoji} ${label}`;
+        badge.style.color        = textColor;
+        badge.style.background   = bgColor;
+        badge.style.border       = `1px solid ${borderColor}`;
+    }
+
     // ─── Main ─────────────────────────────────────────────────────────────────
 
     // Accumulates data from both weekly rows before saving a snapshot
@@ -265,9 +345,10 @@
                         const { row, usedEl } = found;
                         const usedMatch = usedEl.textContent.match(/(\d+)%/);
                         if (usedMatch) {
-                            const used = +usedMatch[1];
+                            const used     = +usedMatch[1];
+                            const baseline = getSessionBaseline(resetAt.getTime(), used);
                             colorizeBar(row, used);
-                            p.after(buildSessionBlock(resetAt, used));
+                            p.after(buildSessionBlock(resetAt, used, baseline));
                         }
                     }
                 }
@@ -296,8 +377,6 @@
                 const labelText = labelContainer?.querySelector('p')?.textContent || '';
                 const field = /sonnet/i.test(labelText) ? 'sonnet' : 'allModels';
 
-                snapshotData[field] = { used, weekResetTs };
-
                 // Feature 4: colorize bar
                 colorizeBar(row, used);
 
@@ -306,17 +385,40 @@
                 if (sparkline && labelContainer) labelContainer.appendChild(sparkline);
 
                 // Features 1 + 2 + 5: info block
-                p.after(buildWeeklyBlock(resetDate, used));
+                const weeklyBlock = buildWeeklyBlock(resetDate, used);
+                p.after(weeklyBlock);
+
+                snapshotData[field] = { used, weekResetTs, weeklyBlock };
             }
         });
 
-        // Save snapshot once both rows have been processed
+        // Run cross-row features once both rows have been processed
         if (snapshotData.allModels && snapshotData.sonnet) {
             maybeSaveSnapshot(
                 snapshotData.allModels.weekResetTs,
                 snapshotData.allModels.used,
                 snapshotData.sonnet.used,
             );
+
+            // Global status badge
+            updateGlobalBadge(
+                snapshotData.allModels.used,
+                snapshotData.sonnet.used,
+                snapshotData.allModels.weekResetTs,
+            );
+
+            // Other models breakdown on the allModels block
+            const { weeklyBlock } = snapshotData.allModels;
+            if (weeklyBlock && !weeklyBlock.querySelector('[data-cot-breakdown]')) {
+                const other = snapshotData.allModels.used - snapshotData.sonnet.used;
+                if (other > 0) {
+                    weeklyBlock.appendChild(mkEl('div', {
+                        style: 'font-size:.75em;opacity:.65;padding-left:2px;',
+                        text: `~${other}% from other models`,
+                        dataset: { cotBreakdown: '1' },
+                    }));
+                }
+            }
         }
     }
 
