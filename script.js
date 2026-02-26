@@ -117,6 +117,43 @@
         return container;
     }
 
+    // ─── Session info block ───────────────────────────────────────────────────
+
+    function buildSessionBlock(resetDate, used) {
+        const remaining = 100 - used;
+        const hoursLeft = (resetDate - Date.now()) / 3_600_000;
+
+        const perHour = hoursLeft > 0.05 ? `~${(remaining / hoursLeft).toFixed(2)}%/h` : '—';
+        const timeLeft = hoursLeft >= 1
+            ? `in ${hoursLeft.toFixed(1)} h`
+            : `in ${Math.round(hoursLeft * 60)} min`;
+
+        const isAlert = remaining < ALERT_THRESHOLD;
+
+        const wrapper = mkEl('div', {
+            style: 'margin-top:6px;display:flex;flex-direction:column;gap:3px;',
+            dataset: { ce: '1' },
+        });
+
+        const badge = mkEl('span', {
+            style: [
+                isAlert
+                    ? 'background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);'
+                    : 'background:rgba(128,128,128,.1);border:1px solid transparent;',
+                'border-radius:5px;padding:2px 8px;font-size:.8em;',
+                'display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;',
+            ].join(''),
+        });
+
+        if (isAlert) badge.appendChild(mkEl('span', { style: 'color:#ef4444;', text: '⚠' }));
+        badge.appendChild(mkEl('span', { text: `${remaining}% remaining · ` }));
+        badge.appendChild(mkEl('b', { text: perHour }));
+        badge.appendChild(mkEl('span', { style: 'opacity:.6;', text: ` (resets ${timeLeft})` }));
+        wrapper.appendChild(badge);
+
+        return wrapper;
+    }
+
     // ─── Features 1 + 2 + 5: weekly info block ────────────────────────────────
 
     function buildWeeklyBlock(resetDate, used) {
@@ -222,6 +259,17 @@
                         style: 'margin-left:8px;opacity:.6;font-size:.88em;',
                         text: `(at ${fmtHM(resetAt)})`,
                     }));
+
+                    const found = findRowContainer(p);
+                    if (found) {
+                        const { row, usedEl } = found;
+                        const usedMatch = usedEl.textContent.match(/(\d+)%/);
+                        if (usedMatch) {
+                            const used = +usedMatch[1];
+                            colorizeBar(row, used);
+                            p.after(buildSessionBlock(resetAt, used));
+                        }
+                    }
                 }
                 return;
             }
