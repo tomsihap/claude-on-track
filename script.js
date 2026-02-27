@@ -214,9 +214,10 @@
         const delta     = used - idealUsed;
         let idealStr = '';
         if (elapsedHours > 0.5) {
+            const paceRatio = Math.round(used / idealUsed * 100);
             if      (Math.abs(delta) < 1) idealStr = '≈ on target';
-            else if (delta < 0)           idealStr = `${Math.abs(delta).toFixed(1)}% below ideal pace ✓`;
-            else                          idealStr = `${delta.toFixed(1)}% above ideal pace`;
+            else if (delta < 0)           idealStr = `${Math.abs(delta).toFixed(1)} pts below (${paceRatio}% of ideal) ✓`;
+            else                          idealStr = `${delta.toFixed(1)} pts above (${paceRatio}% of ideal)`;
         }
 
         // Budget rates
